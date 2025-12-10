@@ -3,8 +3,16 @@ const cors = require("cors");
 require("dotenv").config();
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const admin = require("firebase-admin");
+
+const serviceAccount = require("./firebaseAdminSdk.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
 const uri = process.env.DB_URI;
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
+
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -12,81 +20,135 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
+
 const app = express();
 app.use(cors());
 app.use(express.json());
+
 const port = 3000;
 
 app.get("/", (req, res) => {
-  res.send("Hello World!");
+  res.send("MicroLoan Server Running...");
 });
+
 async function run() {
-  try {
-    // Connect the client to the server (optional starting in v4.7)
-    // await client.connect();
-    const MicroLoan = client.db("MicroLoan");
-    const MicroLoanCollection = MicroLoan.collection("loans");
-    const appliedLoanCollection = MicroLoan.collection("applied-loan");
-    // Send a ping to confirm a successful connection
-    app.get("/loans", async (req, res) => {
-      const cursor = MicroLoanCollection.find();
-      const result = await cursor.toArray();
-      res.send(result);
+  const MicroLoan = client.db("MicroLoan");
+
+  const loansCollection = MicroLoan.collection("loans");
+  const appliedLoanCollection = MicroLoan.collection("applied-loan");
+  const usersCollection = MicroLoan.collection("users");
+
+  app.get("/loans", async (req, res) => {
+    const result = await loansCollection.find().toArray();
+    res.send(result);
+  });
+
+  app.get("/loans/:id", async (req, res) => {
+    const id = req.params.id;
+
+    const result = await loansCollection.findOne({
+      _id: new ObjectId(id),
     });
 
-    app.get("/loans/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await MicroLoanCollection.findOne(query);
-      res.send(result);
+    res.send(result);
+  });
+
+  app.get("/top-loans", async (req, res) => {
+    const result = await loansCollection.find().limit(6).skip(4).toArray();
+    res.send(result);
+  });
+
+  app.post("/users", async (req, res) => {
+    const user = req.body;
+
+    const exists = await usersCollection.findOne({ email: user.email });
+
+    if (exists) {
+      return res.send({ message: "user already exists" });
+    }
+
+    const result = await usersCollection.insertOne(user);
+    res.send(result);
+  });
+
+  app.get("/users/role/:email", async (req, res) => {
+    const email = req.params.email;
+
+    const user = await usersCollection.findOne({ email });
+
+    res.send({ role: user?.role || "borrower" });
+  });
+
+  app.post("/applied-loan", async (req, res) => {
+    const { userEmail, loanTitle } = req.body;
+
+    //  DUPLICATE CHECK
+    const alreadyApplied = await appliedLoanCollection.findOne({
+      userEmail,
+      loanTitle,
     });
 
-    app.get("/top-loans", async (req, res) => {
-      const cursor = MicroLoanCollection.find().limit(6).skip(4);
-      const result = await cursor.toArray();
-      res.send(result);
-    });
-
-    app.post("/applied-loan", async (req, res) => {
-      const { userEmail, loanTitle } = req.body;
-
-    
-      const alreadyApplied = await appliedLoanCollection.findOne({
-        userEmail,
-        loanTitle,
+    if (alreadyApplied) {
+      return res.status(409).send({
+        success: false,
+        message: "You have already applied for this loan",
       });
+    }
 
-      if (alreadyApplied) {
-        return res.status(409).send({
-          success: false,
-          message: "You have already applied for this loan",
-        });
-      }
-
-      
-      const result = await appliedLoanCollection.insertOne({
-        ...req.body,
-        status: "Pending",
-        applicationFeeStatus: "Unpaid",
-        appliedAt: new Date(),
-      });
-
-      res.send({
-        success: true,
-        insertedId: result.insertedId,
-      });
+    const result = await appliedLoanCollection.insertOne({
+      ...req.body,
+      status: "Pending",
+      applicationFeeStatus: "Unpaid",
+      appliedAt: new Date(),
     });
 
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
+    res.send({
+      success: true,
+      insertedId: result.insertedId,
+    });
+  });
+
+  app.get("/applied-loans", async (req, res) => {
+    const email = req.query.email;
+
+    const user = await usersCollection.findOne({ email });
+
+    if (user?.role !== "manager") {
+      return res.status(403).send({ message: "Forbidden Access" });
+    }
+
+    const result = await appliedLoanCollection.find().toArray();
+    res.send(result);
+  });
+
+  app.patch("/applied-loan/:id", async (req, res) => {
+    const id = req.params.id;
+    const status = req.body.status;
+
+    const result = await appliedLoanCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status } }
     );
-  } finally {
-    // Ensures that the client will close when you finish/error
-    //  await client.close();
-  }
+
+    res.send(result);
+  });
+
+  app.delete("/applied-loan/:id", async (req, res) => {
+    const id = req.params.id;
+
+    const result = await appliedLoanCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    res.send(result);
+  });
+
+  await client.db("admin").command({ ping: 1 });
+  console.log(" MongoDB Connected Successfully!");
 }
-run().catch(console.dir);
+
+run();
+
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+  console.log(` Server running on http://localhost:${port}`);
 });
