@@ -1,10 +1,10 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
+const jwt = require("jsonwebtoken");
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
-
 const serviceAccount = require("./firebaseAdminSdk.json");
 
 admin.initializeApp({
@@ -27,51 +27,53 @@ app.use(express.json());
 
 const port = 3000;
 
-app.get("/", (req, res) => {
-  res.send("MicroLoan Server Running...");
-});
+// JWT Middleware
+const verifyJWT = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader)
+    return res.status(401).send({ message: "Unauthorized access" });
 
+  const token = authHeader.split(" ")[1];
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).send({ message: "Forbidden access" });
+    req.user = decoded;
+    next();
+  });
+};
+
+//  MongoDB Connect 
 async function run() {
   try {
     await client.connect();
     console.log("MongoDB Connected Successfully!");
-
     const db = client.db("MicroLoan");
     const loansCollection = db.collection("loans");
     const appliedLoanCollection = db.collection("applied-loan");
     const usersCollection = db.collection("users");
 
-    //LOANS 
-    app.get("/loans", async (req, res) => {
-      try {
-        const result = await loansCollection.find().toArray();
-        res.send(result);
-      } catch (err) {
-        res.status(500).send({ message: err.message });
-      }
+    //ROOT 
+    app.get("/", (req, res) => {
+      res.send("MicroLoan Server Running...");
     });
 
-    app.get("/loans/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const result = await loansCollection.findOne({ _id: new ObjectId(id) });
-        res.send(result);
-      } catch (err) {
-        res.status(500).send({ message: err.message });
-      }
+    // LOGIN / JWT 
+    app.post("/login", async (req, res) => {
+      const { email } = req.body;
+      if (!email) return res.status(400).send({ message: "Email required" });
+
+      const user = await usersCollection.findOne({ email });
+      if (!user) return res.status(404).send({ message: "User not found" });
+
+      const token = jwt.sign({ email: user.email, role: user.role }, process.env.JWT_SECRET, {
+        expiresIn: "1d",
+      });
+
+      res.send({ token, user });
     });
 
-    app.get("/top-loans", async (req, res) => {
-      try {
-        const result = await loansCollection.find().limit(6).skip(4).toArray();
-        res.send(result);
-      } catch (err) {
-        res.status(500).send({ message: err.message });
-      }
-    });
-
-    //USERS 
-    app.get("/users", async (req, res) => {
+    // USERS 
+    app.get("/users", verifyJWT, async (req, res) => {
       try {
         const result = await usersCollection.find().toArray();
         res.send(result);
@@ -83,12 +85,10 @@ async function run() {
     app.post("/users", async (req, res) => {
       try {
         const user = req.body;
-
         const exists = await usersCollection.findOne({ email: user.email });
         if (exists) {
           return res.status(409).send({ message: "User already exists" });
         }
-
         const result = await usersCollection.insertOne(user);
         res.send(result);
       } catch (err) {
@@ -96,25 +96,16 @@ async function run() {
       }
     });
 
-    app.delete("/users/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
-        res.send(result);
-      } catch (err) {
-        res.status(500).send({ message: err.message });
-      }
-    });
-
-    app.patch("/users/:id", async (req, res) => {
+    app.patch("/users/:id", verifyJWT, async (req, res) => {
       try {
         const id = req.params.id;
         const { role, currentUserEmail } = req.body;
 
-        const userToUpdate = await usersCollection.findOne({ _id: new ObjectId(id) });
+        if (req.user.role !== "manager") {
+          return res.status(403).send({ message: "Only manager can change roles" });
+        }
 
-        // Prevent manager from updating their own role
-        if (userToUpdate.email === currentUserEmail) {
+        if (currentUserEmail === req.user.email) {
           return res.status(403).send({ message: "You cannot update your own role!" });
         }
 
@@ -122,7 +113,6 @@ async function run() {
           { _id: new ObjectId(id) },
           { $set: { role } }
         );
-
         res.send(result);
       } catch (err) {
         res.status(500).send({ message: err.message });
@@ -139,11 +129,50 @@ async function run() {
       }
     });
 
-    //  APPLY LOAN 
-    app.post("/applied-loan", async (req, res) => {
+    //LOANS 
+    app.get("/loans", async (req, res) => {
+      try {
+        const result = await loansCollection.find().toArray();
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.post("/loans", verifyJWT, async (req, res) => {
+      try {
+        if (req.user.role !== "manager") {
+          return res.status(403).send({ message: "Only manager can create loans" });
+        }
+
+        const { title, description, amount, interestRate, image } = req.body;
+        if (!title || !description || !amount || !interestRate || !image) {
+          return res.status(400).send({ message: "All fields are required" });
+        }
+
+        const newLoan = { title, description, amount, interestRate, image, createdAt: new Date() };
+        const result = await loansCollection.insertOne(newLoan);
+
+        res.send({ success: true, message: "Loan created successfully", loanId: result.insertedId });
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.get("/loans/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await loansCollection.findOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    //APPLY LOAN
+    app.post("/applied-loan", verifyJWT, async (req, res) => {
       try {
         const { userEmail, loanTitle } = req.body;
-
         const alreadyApplied = await appliedLoanCollection.findOne({ userEmail, loanTitle });
         if (alreadyApplied) {
           return res.status(409).send({ success: false, message: "You have already applied for this loan" });
@@ -162,14 +191,12 @@ async function run() {
       }
     });
 
-    app.get("/applied-loans", async (req, res) => {
+    app.get("/applied-loans", verifyJWT, async (req, res) => {
       try {
         const email = req.query.email;
         let query = {};
-
         if (email) {
-          const user = await usersCollection.findOne({ email });
-          if (user?.role !== "manager") {
+          if (req.user.role !== "manager") {
             query = { userEmail: email };
           }
         }
@@ -181,23 +208,21 @@ async function run() {
       }
     });
 
-    app.patch("/applied-loan/:id", async (req, res) => {
+    app.patch("/applied-loan/:id", verifyJWT, async (req, res) => {
       try {
         const id = req.params.id;
         const { status } = req.body;
-
-        const result = await appliedLoanCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status } }
-        );
-
+        if (req.user.role !== "manager") {
+          return res.status(403).send({ message: "Only manager can update loan status" });
+        }
+        const result = await appliedLoanCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status } });
         res.send(result);
       } catch (err) {
         res.status(500).send({ message: err.message });
       }
     });
 
-    app.delete("/applied-loan/:id", async (req, res) => {
+    app.delete("/applied-loan/:id", verifyJWT, async (req, res) => {
       try {
         const id = req.params.id;
         const result = await appliedLoanCollection.deleteOne({ _id: new ObjectId(id) });
