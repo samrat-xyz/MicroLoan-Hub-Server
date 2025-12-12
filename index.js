@@ -32,123 +32,188 @@ app.get("/", (req, res) => {
 });
 
 async function run() {
-  const MicroLoan = client.db("MicroLoan");
+  try {
+    await client.connect();
+    console.log("MongoDB Connected Successfully!");
 
-  const loansCollection = MicroLoan.collection("loans");
-  const appliedLoanCollection = MicroLoan.collection("applied-loan");
-  const usersCollection = MicroLoan.collection("users");
+    const db = client.db("MicroLoan");
+    const loansCollection = db.collection("loans");
+    const appliedLoanCollection = db.collection("applied-loan");
+    const usersCollection = db.collection("users");
 
-  app.get("/loans", async (req, res) => {
-    const result = await loansCollection.find().toArray();
-    res.send(result);
-  });
-
-  app.get("/loans/:id", async (req, res) => {
-    const id = req.params.id;
-
-    const result = await loansCollection.findOne({
-      _id: new ObjectId(id),
+    //LOANS 
+    app.get("/loans", async (req, res) => {
+      try {
+        const result = await loansCollection.find().toArray();
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
     });
 
-    res.send(result);
-  });
-
-  app.get("/top-loans", async (req, res) => {
-    const result = await loansCollection.find().limit(6).skip(4).toArray();
-    res.send(result);
-  });
-
-  app.post("/users", async (req, res) => {
-    const user = req.body;
-
-    const exists = await usersCollection.findOne({ email: user.email });
-
-    if (exists) {
-      return res.send({ message: "user already exists" });
-    }
-
-    const result = await usersCollection.insertOne(user);
-    res.send(result);
-  });
-
-  app.get("/users/role/:email", async (req, res) => {
-    const email = req.params.email;
-
-    const user = await usersCollection.findOne({ email });
-
-    res.send({ role: user?.role || "borrower" });
-  });
-
-  app.post("/applied-loan", async (req, res) => {
-    const { userEmail, loanTitle } = req.body;
-
-    //  DUPLICATE CHECK
-    const alreadyApplied = await appliedLoanCollection.findOne({
-      userEmail,
-      loanTitle,
+    app.get("/loans/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await loansCollection.findOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
     });
 
-    if (alreadyApplied) {
-      return res.status(409).send({
-        success: false,
-        message: "You have already applied for this loan",
-      });
-    }
-
-    const result = await appliedLoanCollection.insertOne({
-      ...req.body,
-      status: "Pending",
-      applicationFeeStatus: "Unpaid",
-      appliedAt: new Date(),
+    app.get("/top-loans", async (req, res) => {
+      try {
+        const result = await loansCollection.find().limit(6).skip(4).toArray();
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
     });
 
-    res.send({
-      success: true,
-      insertedId: result.insertedId,
-    });
-  });
-
-  app.get("/applied-loans", async (req, res) => {
-    const email = req.query.email;
-
-    const user = await usersCollection.findOne({ email });
-
-    if (user?.role !== "manager") {
-      return res.status(403).send({ message: "Forbidden Access" });
-    }
-
-    const result = await appliedLoanCollection.find().toArray();
-    res.send(result);
-  });
-
-  app.patch("/applied-loan/:id", async (req, res) => {
-    const id = req.params.id;
-    const status = req.body.status;
-
-    const result = await appliedLoanCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { status } }
-    );
-
-    res.send(result);
-  });
-
-  app.delete("/applied-loan/:id", async (req, res) => {
-    const id = req.params.id;
-
-    const result = await appliedLoanCollection.deleteOne({
-      _id: new ObjectId(id),
+    //USERS 
+    app.get("/users", async (req, res) => {
+      try {
+        const result = await usersCollection.find().toArray();
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
     });
 
-    res.send(result);
-  });
+    app.post("/users", async (req, res) => {
+      try {
+        const user = req.body;
 
-  await client.db("admin").command({ ping: 1 });
-  console.log(" MongoDB Connected Successfully!");
+        const exists = await usersCollection.findOne({ email: user.email });
+        if (exists) {
+          return res.status(409).send({ message: "User already exists" });
+        }
+
+        const result = await usersCollection.insertOne(user);
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.delete("/users/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.patch("/users/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { role, currentUserEmail } = req.body;
+
+        const userToUpdate = await usersCollection.findOne({ _id: new ObjectId(id) });
+
+        // Prevent manager from updating their own role
+        if (userToUpdate.email === currentUserEmail) {
+          return res.status(403).send({ message: "You cannot update your own role!" });
+        }
+
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role } }
+        );
+
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.get("/users/role/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const user = await usersCollection.findOne({ email });
+        res.send({ role: user?.role || "borrower" });
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    //  APPLY LOAN 
+    app.post("/applied-loan", async (req, res) => {
+      try {
+        const { userEmail, loanTitle } = req.body;
+
+        const alreadyApplied = await appliedLoanCollection.findOne({ userEmail, loanTitle });
+        if (alreadyApplied) {
+          return res.status(409).send({ success: false, message: "You have already applied for this loan" });
+        }
+
+        const result = await appliedLoanCollection.insertOne({
+          ...req.body,
+          status: "Pending",
+          applicationFeeStatus: "Unpaid",
+          appliedAt: new Date(),
+        });
+
+        res.send({ success: true, insertedId: result.insertedId });
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.get("/applied-loans", async (req, res) => {
+      try {
+        const email = req.query.email;
+        let query = {};
+
+        if (email) {
+          const user = await usersCollection.findOne({ email });
+          if (user?.role !== "manager") {
+            query = { userEmail: email };
+          }
+        }
+
+        const result = await appliedLoanCollection.find(query).toArray();
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.patch("/applied-loan/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { status } = req.body;
+
+        const result = await appliedLoanCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status } }
+        );
+
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    app.delete("/applied-loan/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await appliedLoanCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+  } catch (err) {
+    console.error("MongoDB connection failed:", err.message);
+  }
 }
 
 run();
 
 app.listen(port, () => {
-  console.log(` Server running on http://localhost:${port}`);
+  console.log(`Server running on http://localhost:${port}`);
 });
