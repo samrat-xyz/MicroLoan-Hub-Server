@@ -27,7 +27,7 @@ app.get("/", (req, res) => {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     console.log("MongoDB Connected Successfully!");
 
     const db = client.db("MicroLoan");
@@ -49,7 +49,7 @@ async function run() {
       try {
         const { title, description, amount, interestRate, image } = req.body;
 
-        // Simple validation
+        
         if (!title || !description || !amount || !interestRate || !image) {
           return res.status(400).send({ message: "All fields are required" });
         }
